@@ -1,0 +1,20 @@
+language: "en-US"
+early_access: false
+reviews:
+  profile: "assertive"
+  request_changes: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    ignore_title_keywords: []
+    drafts: false
+    base_branches:
+      - develop
+      - main
+      - "feat/*"
+      - "fix/*"
+chat:
+  auto_reply: true
