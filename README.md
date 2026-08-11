@@ -16,7 +16,7 @@ interview coordination) — **no write tools, no mutations, ever**.
   MySQL dev clone (`studenthub_prod_local`), never prod. Prod is only touched
   after explicit approval, using the read-only user.
 
-## Tools (phase 1 — recruitment domain)
+## Tools
 
 | Tool | Purpose |
 |---|---|
@@ -28,6 +28,15 @@ interview coordination) — **no write tools, no mutations, ever**.
 | `get_company_tree` | Company hierarchy: parent + sub-companies (for rate/invoice aggregation) |
 | `get_universities` | University reference with candidate counts |
 | `get_countries` | Country distribution of the candidate pool |
+| `resolve_person` | **Layer 2 identity registry** — resolve any identifier (Discord id, Universe player id, email, phone) to a person + their linked player accounts + legacy StudentHub identities |
+
+## Person registry (Layer 2)
+
+Cross-platform identity: one `person` row per human, linking Discord / Universe
+player ids / email / phone to legacy StudentHub account ids. Additive and
+reversible — `migrations/001_person_registry.sql` creates 3 new tables and
+touches no legacy table. Applied to prod **manually after approval**; the MCP
+itself is SELECT-only and never runs DDL.
 
 ## Run locally
 

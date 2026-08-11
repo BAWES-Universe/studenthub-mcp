@@ -10,8 +10,14 @@ from queries import (
     build_company_tree,
     build_company_tree_sub_companies,
     build_get_countries,
+    build_get_person_identities,
+    build_get_person_players,
     build_get_request,
     build_get_request_applications,
+    build_resolve_person_by_discord,
+    build_resolve_person_by_email,
+    build_resolve_person_by_phone,
+    build_resolve_person_by_player,
     build_search_candidates,
     build_search_companies,
     build_search_requests,
@@ -224,3 +230,54 @@ class TestPayloads:
 
         p = err_payload("db_error", "boom")
         assert json.loads(p) == {"ok": False, "error": "db_error", "message": "boom"}
+
+
+# ---------------------------------------------------------------------------
+# person registry (Layer 2 — resolve_person)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildResolvePerson:
+    def test_by_discord_uses_exact_match(self):
+        sql, params = build_resolve_person_by_discord("123456789012345678")
+        assert "FROM person" in sql
+        assert "discord_id = %s" in sql
+        assert params == ("123456789012345678",)
+
+    def test_by_player_joins_player_table(self):
+        sql, params = build_resolve_person_by_player("player-abc")
+        assert "FROM person p" in sql
+        assert "JOIN person_player" in sql
+        assert "pp.player_id = %s" in sql
+        assert params == ("player-abc",)
+
+    def test_by_email_uses_exact_match(self):
+        sql, params = build_resolve_person_by_email("ali@example.com")
+        assert "FROM person" in sql
+        assert "email = %s" in sql
+        assert params == ("ali@example.com",)
+
+    def test_by_phone_uses_exact_match(self):
+        sql, params = build_resolve_person_by_phone("+965****0001")
+        assert "FROM person" in sql
+        assert "phone = %s" in sql
+        assert params == ("+965****0001",)
+
+    def test_get_person_players_scoped_to_person(self):
+        sql, params = build_get_person_players(42)
+        assert "FROM person_player" in sql
+        assert "person_id = %s" in sql
+        assert params == (42,)
+
+    def test_get_person_identities_scoped_to_person(self):
+        sql, params = build_get_person_identities(42)
+        assert "FROM person_identity" in sql
+        assert "person_id = %s" in sql
+        assert params == (42,)
+
+    def test_identity_query_selects_account_type_and_legacy_id(self):
+        sql, _ = build_get_person_identities(1)
+        assert "account_type" in sql
+        assert "legacy_id" in sql
+        assert "ORDER BY" in sql
+

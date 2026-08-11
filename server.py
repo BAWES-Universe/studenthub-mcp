@@ -1,10 +1,11 @@
 """StudentHub MCP — read-only data layer.
 
-Phase 1 tools (recruitment domain):
+Tools:
   search_candidates, get_candidate_profile
   search_requests, get_request
   get_companies, get_company_tree
   get_universities, get_countries
+  resolve_person (Layer 2 person registry — cross-platform identity)
 
 Safety contract:
   - SELECT-only. No write tools, no DDL, no mutations of any kind.
@@ -33,10 +34,16 @@ from queries import (
     build_get_candidate_skills,
     build_get_candidate_work,
     build_get_countries,
+    build_get_person_identities,
+    build_get_person_players,
     build_get_request,
     build_get_request_applications,
     build_get_request_company,
     build_get_universities,
+    build_resolve_person_by_discord,
+    build_resolve_person_by_email,
+    build_resolve_person_by_phone,
+    build_resolve_person_by_player,
     build_search_candidates,
     build_search_companies,
     build_search_requests,
@@ -304,6 +311,76 @@ def get_countries(limit: Annotated[int | None, "Max rows (1-200, default 50)"] =
     except pymysql.MySQLError as e:
         return err_payload("db_error", f"Query failed: {e}")
     return ok_payload(rows)
+
+
+# ---------------------------------------------------------------------------
+# Person registry (Layer 2 — resolve_person)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def resolve_person(
+    identifier: Annotated[str, "Discord user id, Universe player id, email, or phone of the person"],
+) -> str:
+    """Resolve ANY identifier to the person registry entry (Layer 2).
+
+    Looks up a person by Discord user id, Universe player id, email, or
+    phone — in that order. Returns the person row, all their linked
+    Universe player accounts, and their legacy StudentHub identities
+    (account_type + legacy_id), which you can then use with the other
+    tools (e.g. get_candidate_profile with a candidate legacy_id).
+
+    The registry is additive: people appear here once they link a Discord
+    account (Discord OAuth flow). Until then, search_candidates is the
+    legacy-table path.
+    """
+    matched_by = None
+    rows: list[dict] = []
+    try:
+        sql, params = build_resolve_person_by_discord(identifier)
+        rows = _query(sql, params)
+        if rows:
+            matched_by = "discord_id"
+
+        if not rows:
+            sql, params = build_resolve_person_by_player(identifier)
+            rows = _query(sql, params)
+            if rows:
+                matched_by = "player_id"
+
+        if not rows:
+            sql, params = build_resolve_person_by_email(identifier)
+            rows = _query(sql, params)
+            if rows:
+                matched_by = "email"
+
+        if not rows:
+            sql, params = build_resolve_person_by_phone(identifier)
+            rows = _query(sql, params)
+            if rows:
+                matched_by = "phone"
+
+        matches = []
+        for p in rows:
+            pid = p["person_id"]
+            sql, params = build_get_person_players(pid)
+            players = _query(sql, params)
+            sql, params = build_get_person_identities(pid)
+            identities = _query(sql, params)
+            matches.append(
+                {
+                    "person": p,
+                    "players": [pp["player_id"] for pp in players],
+                    "identities": identities,
+                }
+            )
+    except pymysql.MySQLError as e:
+        return err_payload("db_error", f"Query failed: {e}")
+
+    if not rows:
+        return err_payload("not_found", f"No person found for identifier: {identifier}")
+
+    return ok_payload({"matched_by": matched_by, "matches": matches})
 
 
 # ---------------------------------------------------------------------------
