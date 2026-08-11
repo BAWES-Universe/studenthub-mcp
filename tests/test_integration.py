@@ -156,3 +156,43 @@ class TestReference:
         by_name = {r["university_name_en"]: r for r in data}
         assert by_name["Cairo University"]["candidate_count"] == 2
         assert by_name["Kuwait University"]["candidate_count"] == 1
+
+
+class TestResolvePerson:
+    def test_by_discord_id(self, db_ready):
+        payload = server.resolve_person("123456789012345678")
+        data = _data(payload)
+        assert data["matched_by"] == "discord_id"
+        assert data["matches"][0]["person"]["display_name"] == "Ali Hassan"
+        # Ali has TWO universe player accounts and one candidate legacy link.
+        assert set(data["matches"][0]["players"]) == {"player-abc", "player-xyz"}
+        assert data["matches"][0]["identities"] == [
+            {"account_type": "candidate", "legacy_id": "1"}
+        ]
+
+    def test_by_player_id(self, db_ready):
+        payload = server.resolve_person("player-xyz")
+        data = _data(payload)
+        assert data["matched_by"] == "player_id"
+        assert data["matches"][0]["person"]["display_name"] == "Ali Hassan"
+
+    def test_by_email(self, db_ready):
+        payload = server.resolve_person("mona@example.com")
+        data = _data(payload)
+        assert data["matched_by"] == "email"
+        # Mona has no players and no legacy links — empty lists, not errors.
+        assert data["matches"][0]["person"]["display_name"] == "Mona Adel"
+        assert data["matches"][0]["players"] == []
+        assert data["matches"][0]["identities"] == []
+
+    def test_by_phone(self, db_ready):
+        payload = server.resolve_person("+965****0001")
+        data = _data(payload)
+        assert data["matched_by"] == "phone"
+        assert data["matches"][0]["person"]["display_name"] == "Ali Hassan"
+
+    def test_unknown_identifier_not_found(self, db_ready):
+        payload = server.resolve_person("nobody@nowhere.com")
+        body = json.loads(payload)
+        assert body["ok"] is False
+        assert body["error"] == "not_found"

@@ -5,10 +5,14 @@
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
+DROP TABLE IF EXISTS person_identity;
+DROP TABLE IF EXISTS person_player;
+DROP TABLE IF EXISTS person;
 DROP TABLE IF EXISTS candidate_link;
 DROP TABLE IF EXISTS candidate_work_history;
 DROP TABLE IF EXISTS candidate_education;
 DROP TABLE IF EXISTS candidate_skill;
+DROP TABLE IF EXISTS candidate;
 DROP TABLE IF EXISTS request_application;
 DROP TABLE IF EXISTS request;
 DROP TABLE IF EXISTS company;
@@ -111,6 +115,38 @@ CREATE TABLE request_application (
   PRIMARY KEY (application_uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Layer 2 person registry (mirrors migrations/001_person_registry.sql)
+CREATE TABLE person (
+  person_id INT NOT NULL AUTO_INCREMENT,
+  display_name VARCHAR(255) DEFAULT NULL,
+  email VARCHAR(255) DEFAULT NULL,
+  phone VARCHAR(50) DEFAULT NULL,
+  discord_id VARCHAR(64) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (person_id),
+  UNIQUE KEY uq_person_discord_id (discord_id),
+  KEY idx_person_email (email),
+  KEY idx_person_phone (phone)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE person_player (
+  person_id INT NOT NULL,
+  player_id VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (player_id),
+  KEY idx_person_player_person (person_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE person_identity (
+  person_id INT NOT NULL,
+  account_type VARCHAR(32) NOT NULL,
+  legacy_id VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (person_id, account_type, legacy_id),
+  KEY idx_person_identity_legacy (account_type, legacy_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ---------------------------------------------------------------------------
 -- Fixture data (synthetic)
 -- ---------------------------------------------------------------------------
@@ -158,5 +194,19 @@ INSERT INTO request_application (application_uuid, request_uuid, candidate_id, s
   ('app_1', 'request_abc', 1, 0, '2025-05-03 09:00:00'),
   ('app_2', 'request_abc', 2, 0, '2025-05-04 09:00:00'),
   ('app_3', 'request_def', 3, 0, '2025-04-03 09:00:00');
+
+-- Person registry fixture data (Layer 2)
+-- Ali: discord + email + phone anchors, TWO universe player accounts, candidate legacy link.
+-- Mona: registered by email only, NO player accounts, NO legacy link (edge case).
+INSERT INTO person (person_id, display_name, email, phone, discord_id) VALUES
+  (1, 'Ali Hassan', 'ali@example.com', '+965****0001', '123456789012345678'),
+  (2, 'Mona Adel', 'mona@example.com', NULL, NULL);
+
+INSERT INTO person_player (person_id, player_id) VALUES
+  (1, 'player-abc'),
+  (1, 'player-xyz');
+
+INSERT INTO person_identity (person_id, account_type, legacy_id) VALUES
+  (1, 'candidate', '1');
 
 SET FOREIGN_KEY_CHECKS = 1;

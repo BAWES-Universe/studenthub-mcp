@@ -1,0 +1,13 @@
+README.md
+probe.py
+pyproject.toml
+queries.py
+run_integration_local.py
+server.py
+studenthub_mcp.egg-info/PKG-INFO
+studenthub_mcp.egg-info/SOURCES.txt
+studenthub_mcp.egg-info/dependency_links.txt
+studenthub_mcp.egg-info/requires.txt
+studenthub_mcp.egg-info/top_level.txt
+tests/test_integration.py
+tests/test_queries.py

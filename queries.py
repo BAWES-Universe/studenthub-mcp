@@ -284,6 +284,60 @@ def build_company_tree_sub_companies(company_id: int) -> tuple[str, tuple[Any, .
 
 
 # ---------------------------------------------------------------------------
+# Person registry (Layer 2 — resolve_person)
+#
+# One person row per human, linking cross-platform identifiers to legacy
+# StudentHub account IDs. ADDITIVE — these tables are created by
+# migrations/001_person_registry.sql and touched by no legacy code.
+# The MCP is SELECT-only: these builders read the registry, never write.
+# ---------------------------------------------------------------------------
+
+
+def build_resolve_person_by_discord(discord_id: str) -> tuple[str, tuple[Any, ...]]:
+    """Person row by exact Discord user id (unique)."""
+    sql = "SELECT * FROM person WHERE discord_id = %s"
+    return sql, (discord_id,)
+
+
+def build_resolve_person_by_player(player_id: str) -> tuple[str, tuple[Any, ...]]:
+    """Person row via Universe player id (one player belongs to one person)."""
+    sql = """
+        SELECT p.*
+        FROM person p
+        JOIN person_player pp ON pp.person_id = p.person_id
+        WHERE pp.player_id = %s
+    """
+    return sql, (player_id,)
+
+
+def build_resolve_person_by_email(email: str) -> tuple[str, tuple[Any, ...]]:
+    """Person rows by exact email (non-unique — a shared mailbox may match many)."""
+    sql = "SELECT * FROM person WHERE email = %s ORDER BY person_id"
+    return sql, (email,)
+
+
+def build_resolve_person_by_phone(phone: str) -> tuple[str, tuple[Any, ...]]:
+    """Person rows by exact phone (non-unique)."""
+    sql = "SELECT * FROM person WHERE phone = %s ORDER BY person_id"
+    return sql, (phone,)
+
+
+def build_get_person_players(person_id: int) -> tuple[str, tuple[Any, ...]]:
+    """All Universe player accounts linked to a person."""
+    sql = "SELECT player_id FROM person_player WHERE person_id = %s ORDER BY created_at"
+    return sql, (person_id,)
+
+
+def build_get_person_identities(person_id: int) -> tuple[str, tuple[Any, ...]]:
+    """All legacy StudentHub account links for a person (account_type, legacy_id)."""
+    sql = (
+        "SELECT account_type, legacy_id FROM person_identity "
+        "WHERE person_id = %s ORDER BY account_type, legacy_id"
+    )
+    return sql, (person_id,)
+
+
+# ---------------------------------------------------------------------------
 # Reference data
 # ---------------------------------------------------------------------------
 
