@@ -3,34 +3,47 @@
 Phase 1 tools (recruitment domain):
   search_candidates, get_candidate_profile
   search_requests, get_request
-  search_interviews
   get_companies, get_company_tree
   get_universities, get_countries
 
 Safety contract:
   - SELECT-only. No write tools, no DDL, no mutations of any kind.
-  - All queries parameterized. No string-built SQL.
+  - All queries parameterized (built in queries.py).
   - Hard LIMIT on every collection query (default 50, max 200).
   - Designed to run against a dedicated read-only MySQL user in prod;
     today it runs against the local dev clone only.
-
-Schema notes (verified against dev clone of prod, 2026-08-11):
-  - Legacy Yii2 DB: UUID primary keys (request_uuid, application_uuid,
-    request_interview_uuid), snake_case, country/university via FK ids.
-  - candidate_country does NOT exist — join country via country_id.
-  - request_candidate does NOT exist — it's request_application.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import time
-from typing import Annotated, Any
+from typing import Annotated
 
 import pymysql
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+
+from queries import (
+    build_company_tree,
+    build_company_tree_sub_companies,
+    build_get_candidate_base,
+    build_get_candidate_education,
+    build_get_candidate_links,
+    build_get_candidate_skills,
+    build_get_candidate_work,
+    build_get_countries,
+    build_get_request,
+    build_get_request_applications,
+    build_get_request_company,
+    build_get_universities,
+    build_search_candidates,
+    build_search_companies,
+    build_search_requests,
+    clamp_limit,
+    err_payload,
+    ok_payload,
+)
 
 load_dotenv()  # .env at project root (python-dotenv, not shell export)
 
@@ -43,9 +56,6 @@ DB_USER = os.environ.get("SH_DB_USER", "root")
 _PW_KEY = "SH_DB_" + "PASSWORD"  # redactor-safe: never write the literal key
 DB_PASSWORD = os.environ.get(_PW_KEY, "")
 DB_NAME = os.environ.get("SH_DB_NAME", "studenthub_dev")
-
-DEFAULT_LIMIT = 50
-MAX_LIMIT = 200
 
 _START_TIME = time.time()
 
@@ -67,10 +77,8 @@ def _connect() -> pymysql.connections.Connection:
     )
 
 
-def _query(sql: str, params: tuple | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+def _query(sql: str, params: tuple | None = None) -> list[dict]:
     """Run a read-only SELECT and return rows as dicts."""
-    if limit is not None:
-        sql = sql.rstrip().rstrip(";") + f" LIMIT {int(limit)}"
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -78,20 +86,6 @@ def _query(sql: str, params: tuple | None = None, limit: int | None = None) -> l
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
-
-
-def _clamp_limit(requested: int | None) -> int:
-    if requested is None:
-        return DEFAULT_LIMIT
-    return max(1, min(int(requested), MAX_LIMIT))
-
-
-def _ok(data: Any) -> str:
-    return json.dumps({"ok": True, "data": data}, default=str)
-
-
-def _err(code: str, message: str) -> str:
-    return json.dumps({"ok": False, "error": code, "message": message})
 
 
 mcp = FastMCP(
@@ -122,43 +116,16 @@ def search_candidates(
     Use for recruitment filtering and outreach list building.
     Fast, indexed-friendly, typically <1s.
     """
-    limit = _clamp_limit(limit)
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    if query:
-        like = f"%{query}%"
-        clauses.append("(c.candidate_name LIKE %s OR c.candidate_email LIKE %s OR c.candidate_phone LIKE %s)")
-        params.extend([like, like, like])
-    if country:
-        clauses.append("co.country_name_en = %s")
-        params.append(country)
-    if university:
-        clauses.append("u.university_name_en LIKE %s")
-        params.append(f"%{university}%")
-    if skill:
-        clauses.append("EXISTS (SELECT 1 FROM candidate_skill cs WHERE cs.candidate_id = c.candidate_id AND cs.skill LIKE %s AND cs.deleted = 0)")
-        params.append(f"%{skill}%")
-    if status:
-        clauses.append("c.candidate_status = %s")
-        params.append(status)
-
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql = f"""
-        SELECT c.candidate_id, c.candidate_name, c.candidate_email, c.candidate_phone,
-               co.country_name_en AS candidate_country, u.university_name_en AS candidate_university,
-               c.candidate_status, c.candidate_created_at
-        FROM candidate c
-        LEFT JOIN country co ON c.country_id = co.country_id
-        LEFT JOIN university u ON c.university_id = u.university_id
-        {where}
-        ORDER BY c.candidate_created_at DESC
-    """
+    limit = clamp_limit(limit)
+    sql, params = build_search_candidates(
+        query=query, country=country, university=university,
+        skill=skill, status=status, limit=limit,
+    )
     try:
-        rows = _query(sql, tuple(params), limit)
+        rows = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok(rows)
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload(rows)
 
 
 @mcp.tool()
@@ -170,43 +137,23 @@ def get_candidate_profile(
     Rich view for interview prep and outreach personalization.
     """
     try:
-        base = _query(
-            """SELECT c.*, co.country_name_en AS candidate_country, u.university_name_en AS candidate_university
-               FROM candidate c
-               LEFT JOIN country co ON c.country_id = co.country_id
-               LEFT JOIN university u ON c.university_id = u.university_id
-               WHERE c.candidate_id = %s""",
-            (candidate_id,),
-        )
+        sql, params = build_get_candidate_base(candidate_id)
+        base = _query(sql, params)
         if not base:
-            return _err("not_found", f"Candidate {candidate_id} not found")
+            return err_payload("not_found", f"Candidate {candidate_id} not found")
 
-        skills = _query(
-            "SELECT * FROM candidate_skill WHERE candidate_id = %s AND deleted = 0 ORDER BY candidate_skill_id",
-            (candidate_id,),
-        )
-        education = _query(
-            """SELECT e.*, u.university_name_en, u.university_name_ar
-               FROM candidate_education e
-               LEFT JOIN university u ON e.university_id = u.university_id
-               WHERE e.candidate_id = %s ORDER BY e.graduation_year DESC""",
-            (candidate_id,),
-        )
-        work = _query(
-            """SELECT w.*, c.company_name, c.parent_company_id
-               FROM candidate_work_history w
-               LEFT JOIN company c ON w.company_id = c.company_id
-               WHERE w.candidate_id = %s AND w.deleted = 0 ORDER BY w.start_date DESC""",
-            (candidate_id,),
-        )
-        links = _query(
-            "SELECT * FROM candidate_link WHERE candidate_id = %s ORDER BY created_at DESC",
-            (candidate_id,),
-        )
+        sql, params = build_get_candidate_skills(candidate_id)
+        skills = _query(sql, params)
+        sql, params = build_get_candidate_education(candidate_id)
+        education = _query(sql, params)
+        sql, params = build_get_candidate_work(candidate_id)
+        work = _query(sql, params)
+        sql, params = build_get_candidate_links(candidate_id)
+        links = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
+        return err_payload("db_error", f"Query failed: {e}")
 
-    return _ok(
+    return ok_payload(
         {
             "candidate": base[0],
             "skills": skills,
@@ -224,7 +171,7 @@ def get_candidate_profile(
 
 @mcp.tool()
 def search_requests(
-    status: Annotated[str | None, "Pipeline status: pending/started/delivered/cancelled/finished_by_recruitment/re_work"] = None,
+    status: Annotated[str | None, "Pipeline status: cancelled/delivered/finished_by_recruitment/started/re_work"] = None,
     company_id: Annotated[int | None, "Filter by company id (use get_companies for values)"] = None,
     position: Annotated[str | None, "Free-text match on position title"] = None,
     limit: Annotated[int | None, "Max rows (1-200, default 50)"] = None,
@@ -233,36 +180,15 @@ def search_requests(
 
     Use for recruiter-velocity triage: what's open, what's stalled, what needs action.
     """
-    limit = _clamp_limit(limit)
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    if status:
-        clauses.append("r.request_status = %s")
-        params.append(status)
-    if company_id:
-        clauses.append("r.company_id = %s")
-        params.append(company_id)
-    if position:
-        clauses.append("r.request_position_title LIKE %s")
-        params.append(f"%{position}%")
-
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql = f"""
-        SELECT r.request_uuid, r.request_position_title, r.request_status,
-               r.company_id, c.company_name,
-               r.request_created_datetime, r.request_started_at, r.request_delivered_at,
-               r.request_priority, r.request_number_of_employees
-        FROM request r
-        LEFT JOIN company c ON r.company_id = c.company_id
-        {where}
-        ORDER BY r.request_created_datetime DESC
-    """
+    limit = clamp_limit(limit)
+    sql, params = build_search_requests(
+        status=status, company_id=company_id, position=position, limit=limit
+    )
     try:
-        rows = _query(sql, tuple(params), limit)
+        rows = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok(rows)
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload(rows)
 
 
 @mcp.tool()
@@ -274,32 +200,19 @@ def get_request(
     Use to understand a single hiring pipeline in depth.
     """
     try:
-        base = _query(
-            "SELECT * FROM request WHERE request_uuid = %s",
-            (request_uuid,),
-        )
+        sql, params = build_get_request(request_uuid)
+        base = _query(sql, params)
         if not base:
-            return _err("not_found", f"Request {request_uuid} not found")
-        company = _query(
-            "SELECT company_id, company_name, company_common_name_en FROM company WHERE company_id = %s",
-            (base[0].get("company_id"),),
-        )
-        candidates = _query(
-            """
-            SELECT a.application_uuid, a.candidate_id, a.status AS application_status,
-                   c.candidate_name, c.candidate_email, c.candidate_phone,
-                   co.country_name_en AS candidate_country
-            FROM request_application a
-            LEFT JOIN candidate c ON a.candidate_id = c.candidate_id
-            LEFT JOIN country co ON c.country_id = co.country_id
-            WHERE a.request_uuid = %s
-            ORDER BY a.created_at DESC
-            """,
-            (request_uuid,),
-        )
+            return err_payload("not_found", f"Request {request_uuid} not found")
+
+        sql, params = build_get_request_company(base[0].get("company_id"))
+        company = _query(sql, params)
+
+        sql, params = build_get_request_applications(request_uuid)
+        candidates = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok({"request": base[0], "company": company, "applications": candidates})
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload({"request": base[0], "company": company, "applications": candidates})
 
 
 # ---------------------------------------------------------------------------
@@ -323,33 +236,13 @@ def get_companies(
 
     Use for employer outreach and understanding the client landscape.
     """
-    limit = _clamp_limit(limit)
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    if query:
-        clauses.append("c.company_name LIKE %s")
-        params.append(f"%{query}%")
-    if country:
-        clauses.append("co.country_name_en = %s")
-        params.append(country)
-
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql = f"""
-        SELECT c.company_id, c.company_name, co.country_name_en AS company_country,
-               c.parent_company_id, p.company_name AS parent_company_name,
-               c.company_hourly_rate, c.company_approved_to_hire, c.company_status_override
-        FROM company c
-        LEFT JOIN company p ON c.parent_company_id = p.company_id
-        LEFT JOIN country co ON c.country_id = co.country_id
-        {where}
-        ORDER BY c.company_name
-    """
+    limit = clamp_limit(limit)
+    sql, params = build_search_companies(query=query, country=country, limit=limit)
     try:
-        rows = _query(sql, tuple(params), limit)
+        rows = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok(rows)
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload(rows)
 
 
 @mcp.tool()
@@ -361,27 +254,21 @@ def get_company_tree(
     Use when rates or invoices need aggregation across sub-companies.
     """
     try:
-        base = _query(
-            "SELECT company_id, company_name, parent_company_id FROM company WHERE company_id = %s",
-            (company_id,),
-        )
+        sql, params = build_company_tree(company_id)
+        base = _query(sql, params)
         if not base:
-            return _err("not_found", f"Company {company_id} not found")
+            return err_payload("not_found", f"Company {company_id} not found")
         node = base[0]
         parent = None
         if node.get("parent_company_id"):
-            p = _query(
-                "SELECT company_id, company_name, parent_company_id FROM company WHERE company_id = %s",
-                (node["parent_company_id"],),
-            )
+            sql, params = build_company_tree(node["parent_company_id"])
+            p = _query(sql, params)
             parent = p[0] if p else None
-        subs = _query(
-            "SELECT company_id, company_name, parent_company_id FROM company WHERE parent_company_id = %s ORDER BY company_name",
-            (company_id,),
-        )
+        sql, params = build_company_tree_sub_companies(company_id)
+        subs = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok({"company": node, "parent": parent, "sub_companies": subs})
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload({"company": node, "parent": parent, "sub_companies": subs})
 
 
 # ---------------------------------------------------------------------------
@@ -395,28 +282,13 @@ def get_universities(
     limit: Annotated[int | None, "Max rows (1-200, default 50)"] = None,
 ) -> str:
     """List universities from the candidate pool. Use to build outreach segments."""
-    limit = _clamp_limit(limit)
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    if country:
-        clauses.append("co.country_name_en = %s")
-        params.append(country)
-
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql = f"""
-        SELECT u.university_id, u.university_name_en, u.university_name_ar,
-               (SELECT COUNT(*) FROM candidate c WHERE c.university_id = u.university_id) AS candidate_count
-        FROM university u
-        LEFT JOIN country co ON u.university_country_id = co.country_id
-        {where}
-        ORDER BY u.university_name_en
-    """
+    limit = clamp_limit(limit)
+    sql, params = build_get_universities(country=country, limit=limit)
     try:
-        rows = _query(sql, tuple(params), limit)
+        rows = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok(rows)
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload(rows)
 
 
 @mcp.tool()
@@ -425,27 +297,19 @@ def get_countries(limit: Annotated[int | None, "Max rows (1-200, default 50)"] =
 
     Use to understand market distribution for campaigns.
     """
-    limit = _clamp_limit(limit)
+    limit = clamp_limit(limit)
+    sql, params = build_get_countries(limit=limit)
     try:
-        rows = _query(
-            """
-            SELECT co.country_name_en AS country, COUNT(*) AS candidate_count
-            FROM candidate c
-            JOIN country co ON c.country_id = co.country_id
-            GROUP BY co.country_name_en
-            ORDER BY candidate_count DESC
-            """,
-            limit=limit,
-        )
+        rows = _query(sql, params)
     except pymysql.MySQLError as e:
-        return _err("db_error", f"Query failed: {e}")
-    return _ok(rows)
+        return err_payload("db_error", f"Query failed: {e}")
+    return ok_payload(rows)
 
 
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
-from starlette.responses import JSONResponse  # noqa: E402
+from starlette.responses import JSONResponse
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -458,7 +322,7 @@ async def health_endpoint(request):
             cur.fetchone()
         conn.close()
         db_ok = True
-    except Exception:
+    except Exception:  # noqa: BLE001 - health endpoint must never 500
         db_ok = False
     return JSONResponse(
         {
