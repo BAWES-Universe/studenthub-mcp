@@ -60,10 +60,10 @@ r = tool_call("search_requests", {"status": "cancelled", "limit": 3})
 for item in r.get("result", {}).get("content", []):
     print(item.get("text", "")[:800])
 
-print("\n--- search_fulltimers (country=Egypt, limit 3) ---")
+print("\n--- search_fulltimers (should error — tool removed) ---")
 r = tool_call("search_fulltimers", {"country": "Egypt", "limit": 3})
 for item in r.get("result", {}).get("content", []):
-    print(item.get("text", "")[:800])
+    print(item.get("text", "")[:200])
 
 print("\n--- get_company_tree (company_id=1) ---")
 r = tool_call("get_company_tree", {"company_id": 1})
@@ -75,6 +75,6 @@ r = tool_call("get_candidate_profile", {"candidate_id": 1})
 for item in r.get("result", {}).get("content", []):
     txt = item.get("text", "")
     print(txt[:500])
-    print("... profile sections:", [k for k in json.loads(txt).get("data", {}).keys()] if txt.startswith("{") else "?")
+    print("... profile sections:", [k for k in json.loads(txt).get("data", {})] if txt.startswith("{") else "?")
 
 print("\nPROBE DONE")
