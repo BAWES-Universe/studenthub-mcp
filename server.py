@@ -102,6 +102,8 @@ mcp = FastMCP(
         "Search candidates, requests, interviews, companies and universities. "
         "You cannot modify anything — queries only."
     ),
+    host=os.environ.get("SH_HOST", "0.0.0.0"),
+    port=int(os.environ.get("SH_PORT", "8000")),
 )
 
 # ---------------------------------------------------------------------------
