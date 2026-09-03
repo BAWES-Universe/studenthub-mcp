@@ -2,6 +2,10 @@
 # Production image. Env (SH_DB_*) is injected by the platform (Coolify), never baked in.
 FROM python:3.12-slim
 
+# Coolify's healthcheck executes curl/wget against the app — required in-image
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root runtime user (least privilege)
 RUN useradd --create-home --uid 10001 appuser
 
